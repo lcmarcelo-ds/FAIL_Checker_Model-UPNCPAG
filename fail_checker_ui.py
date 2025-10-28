@@ -2,16 +2,25 @@ import math
 import re
 from itertools import combinations
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 # ─────────────────────────────────────────────────────────────
+# Fixed defaults (v23.3.1)
+# ─────────────────────────────────────────────────────────────
+CONTRACTOR_VOLUME_THRESHOLD = 5
+GHOST_Q = 0.20
+GHOST_FLOOR = 45
+GHOST_CAP = 180
+GHOST_MIN_GROUP = 20
+
+# ─────────────────────────────────────────────────────────────
 # Page config
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Flood-Control AI Labelled Checker (FAIL Checker) Model", layout="wide")
+st.set_page_config(page_title="FAIL Checker – Single Project Tagger", layout="wide")
 
 # ─────────────────────────────────────────────────────────────
 # Utilities (no-index table helper)
@@ -116,11 +125,11 @@ def add_derived_cols(df: pd.DataFrame) -> pd.DataFrame:
     df["Latitude"] = pd.to_numeric(df["Latitude"], errors="coerce")
     df["Longitude"] = pd.to_numeric(df["Longitude"], errors="coerce")
 
-    # Text fields for safety
+    # Text fields
     if "ProjectDescription" not in df.columns: df["ProjectDescription"] = ""
     if "ProjectTitle" not in df.columns: df["ProjectTitle"] = ""
 
-    # Cost and Contractor
+    # Cost & Contractor
     if "ContractCost" not in df.columns: df["ContractCost"] = np.nan
     df["ContractCost"] = df["ContractCost"].map(parse_cost)
 
@@ -170,7 +179,7 @@ def compute_chop_chop(df, proximity_m=600, soft_proximity_m=1000, min_common_wor
         idxs = g.index.to_list()
         if len(idxs) < 2: continue
         for i, j in combinations(idxs, 2):
-            lat1, lon1 = df.at[i, "Latitude"], df.at[i, "Longitude"]
+            lat1, lon1 = df.at[i, "Latitude"], df.at[j, "Longitude"]
             lat2, lon2 = df.at[j, "Latitude"], df.at[j, "Longitude"]
             dist_m = haversine_m(lat1, lon1, lat2, lon2)
 
@@ -289,8 +298,8 @@ def _group_quantile_thresholds(df, q=0.20, floor_days=45, cap_days=180, min_grou
 
 def compute_potentially_ghost(
     df,
-    q=0.20, floor_days=45, cap_days=180, min_group=20,
-    contractor_volume_threshold=5,
+    q=GHOST_Q, floor_days=GHOST_FLOOR, cap_days=GHOST_CAP, min_group=GHOST_MIN_GROUP,
+    contractor_volume_threshold=CONTRACTOR_VOLUME_THRESHOLD,
     group_keys=("Province_norm","InfraYear")
 ):
     n = len(df)
@@ -401,17 +410,16 @@ def _category_color(cat: str) -> str:
     return "#95a5a6"
 
 # ─────────────────────────────────────────────────────────────
-# Sidebar: reference dataset (optional) & params
+# Sidebar: reference dataset (optional) only
 # ─────────────────────────────────────────────────────────────
 st.sidebar.header("Reference Dataset (optional)")
 ref_file = st.sidebar.file_uploader("Upload CSV/XLSX for cross-record checks", type=["csv", "xlsx"])
 st.sidebar.caption("Uploading a dataset enables Chop-chop & Doppelganger checks and stronger Ghost peer thresholds.")
 
-
 # ─────────────────────────────────────────────────────────────
 # Main form – Single project input
 # ─────────────────────────────────────────────────────────────
-st.title("Flood-Control AI Labelled Checker (FAIL Checker)")
+st.title("FAIL Checker – Single Project Tagger")
 
 with st.form("single_project_form"):
     c1, c2, c3 = st.columns(3)
@@ -420,13 +428,11 @@ with st.form("single_project_form"):
         contractor = st.text_input("Contractor", "")
         contract_cost = st.text_input("Contract Cost (₱)", "")
         infra_year = st.number_input("InfraYear", min_value=1990, max_value=2100, value=2024)
-
     with c2:
         region = st.text_input("Region", "")
         province = st.text_input("Province", "")
         municipality = st.text_input("Municipality/City", "")
         deo = st.text_input("District Engineering Office (DEO)", "")
-
     with c3:
         latitude = st.number_input("Latitude", value=0.0, format="%.6f")
         longitude = st.number_input("Longitude", value=0.0, format="%.6f")
@@ -437,11 +443,11 @@ with st.form("single_project_form"):
     st.text_area("Project Title", "", key="title")
     st.text_area("Project Description", "", key="desc")
 
-    # Extra manual inputs (to support no-dataset cases)
+    # Minimal helpers for no-dataset mode
     st.markdown("**Additional (if no dataset uploaded):**")
     c4, c5 = st.columns(2)
     with c4:
-        contractor_total_projects = st.number_input("Contractor total DPWH projects (known/estimate)", min_value=0, value=0)
+        contractor_total_projects = st.number_input("Contractor total DPWH projects (estimate)", min_value=0, value=0)
     with c5:
         peer_p20_days = st.number_input("Peer P20 threshold for Province/Year (days, if known)", min_value=1, value=60)
 
@@ -466,11 +472,9 @@ def load_ref_df(uploaded) -> Optional[pd.DataFrame]:
 ref_df_raw = load_ref_df(ref_file)
 if ref_df_raw is not None:
     st.success("Reference dataset loaded.")
-    # show small preview
     with st.expander("Preview reference data (first 15 rows)", expanded=False):
         show_table(ref_df_raw.head(15))
 
-# Input row
 if submitted:
     one = pd.DataFrame([{
         "ProjectID": project_id,
@@ -491,10 +495,9 @@ if submitted:
         "ProjectDescription": st.session_state.get("desc", "")
     }])
 
-    # If a reference dataset exists, append and run full checks.
+    # With reference dataset → full rules
     if ref_df_raw is not None and len(ref_df_raw) > 0:
         base = ref_df_raw.copy()
-        # Make sure critical columns exist in base (so derived ops don't fail)
         for need in ["Contractor","ContractCost","InfraYear","Region","Province","Municipality",
                      "DistrictEngineeringOffice","Latitude","Longitude",
                      "StartDate","CompletionDateOriginal","CompletionDateActual",
@@ -505,26 +508,22 @@ if submitted:
         df = pd.concat([base, one], ignore_index=True)
         df = add_derived_cols(df)
 
-        # Compute indicators
         chop_mask, chop_reason   = compute_chop_chop(df)
         dop_mask,  dop_reason    = compute_doppelganger(df)
         ghost_mask, ghost_reason = compute_potentially_ghost(
             df,
-            q=ghost_q, floor_days=ghost_floor, cap_days=ghost_cap, min_group=ghost_min_group,
-            contractor_volume_threshold=contractor_volume_threshold,
+            q=GHOST_Q, floor_days=GHOST_FLOOR, cap_days=GHOST_CAP, min_group=GHOST_MIN_GROUP,
+            contractor_volume_threshold=CONTRACTOR_VOLUME_THRESHOLD,
             group_keys=("Province_norm","InfraYear")
         )
         siyam_mask, siyam_reason = compute_siyam_siyam(df)
 
-        # Attach categories
         df, green_mask = attach_category_labels(df, chop_mask, dop_mask, ghost_mask, siyam_mask)
 
-        # Take the last row (the user’s project)
         row = df.tail(1).copy()
         category = row.iloc[0]["Project_Category"]
         color = _category_color(category)
 
-        # Reasons summary for user's row
         i = row.index[0]
         reasons = []
         if chop_mask[i]: reasons.append(f"Chop-chop: {chop_reason[i]}")
@@ -533,49 +532,40 @@ if submitted:
         if siyam_mask[i]: reasons.append(f"Siyam-siyam: {siyam_reason[i]}")
         if not reasons: reasons.append("Residual Green Flag (no anomaly conditions triggered)")
 
+    # No dataset → partial rules
     else:
-        # No reference dataset: compute what we can from the single row
         df = add_derived_cols(one)
 
-        # Approximate Ghost logic using manual inputs:
-        # - Use contractor_total_projects vs threshold
-        # - Use provided peer_p20_days as threshold for (F)
         dur = df["duration_days"].iloc[0]
         designed_days = (df["CompletionDateOriginal"].iloc[0] - df["StartDate"].iloc[0]).days if \
                         pd.notna(df["CompletionDateOriginal"].iloc[0]) and pd.notna(df["StartDate"].iloc[0]) else np.nan
 
-        # Conditions
         cond_A = pd.notna(dur) and (dur < 0)
         cond_B = pd.notna(designed_days) and (designed_days <= 30)
         cond_C = pd.notna(dur) and (dur <= 30)
-        high_vol = contractor_total_projects > contractor_volume_threshold
+        high_vol = contractor_total_projects > CONTRACTOR_VOLUME_THRESHOLD
         cond_D = pd.notna(dur) and (dur <= 30) and high_vol
         cond_E = (pd.notna(dur) and pd.notna(designed_days) and (dur < 0.75 * designed_days))
-        cond_F = (pd.notna(dur) and (dur > 0) and high_vol and (dur < max(ghost_floor, min(ghost_cap, peer_p20_days))))
+        cond_F = (pd.notna(dur) and (dur > 0) and high_vol and (dur < max(GHOST_FLOOR, min(GHOST_CAP, peer_p20_days))))
 
         is_ghost = cond_A or cond_B or cond_C or cond_D or cond_E or cond_F
 
-        # Siyam-siyam
         ext_days = df["ext_days"].iloc[0]
         crosses_cal = bool(df["crosses_calendar_year"].iloc[0])
         cond_sy1 = pd.notna(ext_days) and (ext_days > 365)
         cond_sy2 = pd.notna(dur) and (dur > 365)
         is_siyam = (cond_sy1 or cond_sy2 or crosses_cal)
 
-        # Exclusivity: Siyam wins over Ghost
         if is_siyam:
             is_ghost = False
 
-        # Category
         cats = []
-        # Chop & Doppelganger cannot be computed without peers → omitted here
         if is_ghost: cats.append("Ghost_Project")
         if is_siyam: cats.append("Siyam-siyam_Project")
         if not cats: cats = ["Green_Flag"]
         category = ";".join(cats)
         color = _category_color(category)
 
-        # Reasons
         reasons = []
         if is_siyam:
             rr = []
@@ -589,7 +579,7 @@ if submitted:
             elif cond_C: reasons.append("Ghost: Very short actual duration (Actual−Start ≤ 30 days)")
             elif cond_D: reasons.append("Ghost: Very short (≤30 days) with high-volume contractor")
             elif cond_E: reasons.append("Ghost: Too fast vs designed (< 75% of designed days)")
-            elif cond_F: reasons.append(f"Ghost: Abnormally short vs peers (< {int(max(ghost_floor, min(ghost_cap, peer_p20_days)))} d) with high contractor load)")
+            elif cond_F: reasons.append(f"Ghost: Abnormally short vs peers (< {int(max(GHOST_FLOOR, min(GHOST_CAP, peer_p20_days)))} d) with high contractor load)")
         else:
             reasons.append("Residual Green Flag (no anomaly conditions triggered)")
 
@@ -613,7 +603,6 @@ if submitted:
     for r in reasons:
         st.write(f"- {r}")
 
-    # Small table
     show_cols = ["ProjectID","Contractor","ContractCost","InfraYear","Region","Province","Municipality",
                  "DistrictEngineeringOffice","StartDate","CompletionDateOriginal","CompletionDateActual",
                  "Latitude","Longitude","ProjectTitle","ProjectDescription"]
@@ -621,7 +610,6 @@ if submitted:
     st.markdown("**Input Snapshot**")
     show_table(df.tail(1)[show_cols])
 
-    # Export (on demand)
     exp = df.tail(1).copy()
     exp["Project_Category"] = category
     exp["Category_Color"] = color

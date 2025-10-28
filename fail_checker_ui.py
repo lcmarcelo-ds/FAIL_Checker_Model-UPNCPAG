@@ -407,12 +407,6 @@ st.sidebar.header("Reference Dataset (optional)")
 ref_file = st.sidebar.file_uploader("Upload CSV/XLSX for cross-record checks", type=["csv", "xlsx"])
 st.sidebar.caption("Uploading a dataset enables Chop-chop & Doppelganger checks and stronger Ghost peer thresholds.")
 
-st.sidebar.header("Parameters")
-contractor_volume_threshold = st.sidebar.number_input("High-volume contractor threshold", min_value=1, value=5, step=1)
-ghost_q = st.sidebar.slider("Ghost peer quantile (q)", min_value=0.05, max_value=0.40, value=0.20, step=0.05)
-ghost_floor = st.sidebar.number_input("Ghost min threshold (days, floor)", min_value=1, value=45, step=1)
-ghost_cap = st.sidebar.number_input("Ghost max threshold (days, cap)", min_value=30, value=180, step=5)
-ghost_min_group = st.sidebar.number_input("Ghost min group size", min_value=1, value=20, step=1)
 
 # ─────────────────────────────────────────────────────────────
 # Main form – Single project input

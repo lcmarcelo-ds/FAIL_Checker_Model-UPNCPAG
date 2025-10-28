@@ -411,7 +411,7 @@ st.sidebar.caption("Uploading a dataset enables Chop-chop & Doppelganger checks 
 # ─────────────────────────────────────────────────────────────
 # Main form – Single project input
 # ─────────────────────────────────────────────────────────────
-st.title("FAIL Checker – Single Project Tagger")
+st.title("Flood-Control AI Labelled Checker (FAIL Checker)")
 
 with st.form("single_project_form"):
     c1, c2, c3 = st.columns(3)
